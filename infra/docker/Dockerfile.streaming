@@ -1,0 +1,29 @@
+FROM apache/spark:3.5.0
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir python-dotenv==1.0.0
+
+WORKDIR /opt/propberg
+COPY jobs/ /opt/propberg/jobs/
+
+ENV PYTHONUNBUFFERED=1
+ENV SPARK_HOME=/opt/spark
+
+CMD ["/opt/spark/bin/spark-submit", \
+    "--master", "local[2]", \
+    "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.2,org.apache.iceberg:iceberg-aws-bundle:1.4.2,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262", \
+    "--conf", "spark.driver.memory=2g", \
+    "--conf", "spark.driver.maxResultSize=1g", \
+    "--conf", "spark.executor.memory=2g", \
+    "--conf", "spark.sql.shuffle.partitions=4", \
+    "--conf", "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem", \
+    "--conf", "spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.EnvironmentVariableCredentialsProvider", \
+    "--conf", "spark.ui.prometheus.enabled=true", \
+    "--conf", "spark.metrics.conf.*.sink.prometheusServlet.class=org.apache.spark.metrics.sink.PrometheusServlet", \
+    "--conf", "spark.metrics.conf.*.sink.prometheusServlet.path=/metrics/prometheus", \
+    "/opt/propberg/jobs/consumer/kafka_consumer.py"]

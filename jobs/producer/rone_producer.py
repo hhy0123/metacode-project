@@ -2,11 +2,15 @@ import requests
 import json
 import time
 import os
+import sys
 import boto3
 from kafka import KafkaProducer
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _runtime import run_daemon
 
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -16,21 +20,14 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 S3_BUCKET = os.getenv("S3_BUCKET")
 TOPIC = "rone-price-index"
 STATBL_ID = "A_2024_00045"
+POLL_INTERVAL = int(os.getenv("RONE_POLL_INTERVAL", "3600"))
 
-print(f"[debug] RONE_API_KEY: {API_KEY[:6]}..." if API_KEY else "[debug] API_KEY 없음")
-
-s3 = boto3.client("s3", region_name="ap-northeast-2")
+s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
 
 producer = KafkaProducer(
     bootstrap_servers=KAFKA_BOOTSTRAP,
     value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
 )
-
-YEAR_MONTHS = [
-    f"{year}{month:02d}"
-    for year in range(2024, 2026)
-    for month in range(1, 13)
-]
 
 def fetch_price_index(year_month: str):
     url = "https://www.reb.or.kr/r-one/openapi/SttsApiTblData.do"
@@ -47,11 +44,11 @@ def fetch_price_index(year_month: str):
     res.raise_for_status()
     return res.json()
 
-def parse_records(data: dict, year_month: str):
+def parse_and_send(data: dict, year_month: str):
     try:
         rows = data["SttsApiTblData"][1]["row"]
     except (KeyError, IndexError):
-        return []
+        return 0
     records = []
     for row in rows:
         record = {
@@ -59,35 +56,29 @@ def parse_records(data: dict, year_month: str):
             "ingested_at": datetime.utcnow().isoformat(),
             **row,
         }
+        producer.send(TOPIC, value=record)
         records.append(record)
-    return records
+    producer.flush()
 
-def save_to_s3(records: list, year_month: str):
-    if not records:
-        return
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    key = f"raw/rone/{today}/{year_month}.json"
-    body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))
+    if records:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        key = f"raw/rone/{today}/{year_month}.json"
+        body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))
 
-def run():
-    total = 0
-    for year_month in YEAR_MONTHS:
-        try:
-            data = fetch_price_index(year_month)
-            records = parse_records(data, year_month)
-            for r in records:
-                producer.send(TOPIC, value=r)
-            producer.flush()
-            save_to_s3(records, year_month)
-            total += len(records)
-            if records:
-                print(f"  [{year_month}] {len(records)}건 전송+S3저장")
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"  [{year_month}] 오류: {e}")
-    print(f"[rone_producer] 완료 — 총 {total}건")
+    return len(records)
+
+def run_once():
+    year_month = datetime.now().strftime("%Y%m")
+    print(f"[rone_producer] {year_month} 폴링 시작 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')} KST)")
+    try:
+        data = fetch_price_index(year_month)
+        count = parse_and_send(data, year_month)
+        print(f"[rone_producer] 폴링 완료 — {count}건 → Kafka Topic: {TOPIC}")
+        return count
+    except Exception as e:
+        print(f"[rone_producer] 오류: {e}")
+        return 0
 
 if __name__ == "__main__":
-    print("[rone_producer] 시작")
-    run()
+    run_daemon("rone_producer", POLL_INTERVAL, run_once)

@@ -1,3 +1,9 @@
+x-aws-env: &aws-env
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  S3_BUCKET: ${S3_BUCKET:-propberg-lakehouse-hhy}
+
 services:
 
   zookeeper:
@@ -16,12 +22,34 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "9094:9094"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: kafka
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: propberg-kafka-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - --kafka.server=kafka:9092
+    ports:
+      - "9308:9308"
 
   postgres:
     image: postgres:15
@@ -44,12 +72,77 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      <<: *aws-env
     volumes:
       - ../../dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
     ports:
       - "8082:8080"
     command: bash -c "airflow db migrate && airflow users create --username admin --password admin --firstname admin --lastname admin --role Admin --email admin@example.com && airflow webserver & airflow scheduler"
+
+  molit-producer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.producer
+    container_name: propberg-molit-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *aws-env
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MOLIT_API_KEY: ${MOLIT_API_KEY}
+      MOLIT_POLL_INTERVAL: ${MOLIT_POLL_INTERVAL:-300}
+      PRODUCER: molit
+    restart: unless-stopped
+
+  rone-producer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.producer
+    container_name: propberg-rone-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *aws-env
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      RONE_API_KEY: ${RONE_API_KEY}
+      RONE_POLL_INTERVAL: ${RONE_POLL_INTERVAL:-3600}
+      PRODUCER: rone
+    restart: unless-stopped
+
+  kosis-producer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.producer
+    container_name: propberg-kosis-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *aws-env
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KOSIS_API_KEY: ${KOSIS_API_KEY}
+      KOSIS_POLL_INTERVAL: ${KOSIS_POLL_INTERVAL:-21600}
+      PRODUCER: kosis
+    restart: unless-stopped
+
+  streaming-consumer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.streaming
+    container_name: propberg-streaming-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *aws-env
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STREAMING_TRIGGER_INTERVAL: ${STREAMING_TRIGGER_INTERVAL:-60 seconds}
+    ports:
+      - "4040:4040"   # Spark UI
+    restart: unless-stopped
 
   spark-master:
     image: apache/spark:3.5.0
@@ -81,7 +174,7 @@ services:
       - "8088:8088"
     environment:
       SUPERSET_SECRET_KEY: propberg-secret-key
-    command: bash -c "superset db upgrade && superset fab create-admin --username admin --password admin --firstname admin --lastname admin --email admin@example.com && superset init && superset run -p 8088 --with-threads"
+    command: bash -c "superset db upgrade && superset fab create-admin --username admin --password admin --firstname admin --lastname admin --email admin@example.com && superset init && superset run -h 0.0.0.0 -p 8088 --with-threads"
 
   prometheus:
     image: prom/prometheus:latest
@@ -104,6 +197,9 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ../../monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards
 
 volumes:
   airflow_logs:

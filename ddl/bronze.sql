@@ -1,4 +1,4 @@
--- Bronze: 국토부 실거래가 raw 테이블
+-- Bronze: 국토부 실거래가 raw 테이블 (Iceberg, streaming append)
 CREATE TABLE IF NOT EXISTS propberg_bronze.raw_transactions (
     deal_id         STRING,
     sigungu_code    STRING,
@@ -19,20 +19,28 @@ CREATE TABLE IF NOT EXISTS propberg_bronze.raw_transactions (
     cdeal_day       STRING,
     raw_json        STRING,
     ingested_at     STRING,
-    ingested_date   STRING
+    ingested_date   STRING,
+    kafka_topic     STRING,
+    kafka_partition INT,
+    kafka_offset    BIGINT
 )
+PARTITIONED BY (ingested_date)
 LOCATION 's3://propberg-lakehouse-hhy/bronze/raw_transactions/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3',
+    'optimize_rewrite_data_file_threshold'='5'
 );
 
--- Bronze: R-ONE 가격지수 raw 테이블
+-- Bronze: R-ONE 가격지수 raw 테이블 (Iceberg, streaming append)
 CREATE TABLE IF NOT EXISTS propberg_bronze.raw_price_index (
     statbl_id       STRING,
     dtacycle_cd     STRING,
     wrttime_idtfr_id STRING,
+    cls_id          STRING,
     cls_nm          STRING,
     cls_fullnm      STRING,
     itm_nm          STRING,
@@ -40,32 +48,47 @@ CREATE TABLE IF NOT EXISTS propberg_bronze.raw_price_index (
     ui_nm           STRING,
     year_month      STRING,
     ingested_at     STRING,
-    ingested_date   STRING
+    ingested_date   STRING,
+    kafka_topic     STRING,
+    kafka_partition INT,
+    kafka_offset    BIGINT
 )
+PARTITIONED BY (ingested_date)
 LOCATION 's3://propberg-lakehouse-hhy/bronze/raw_price_index/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3',
+    'optimize_rewrite_data_file_threshold'='5'
 );
 
--- Bronze: KOSIS 인구 raw 테이블
+-- Bronze: KOSIS 인구 raw 테이블 (Iceberg, streaming append)
 CREATE TABLE IF NOT EXISTS propberg_bronze.raw_population (
     stat_name       STRING,
     orgid           STRING,
     tblid           STRING,
     itm_id          STRING,
     itm_nm          STRING,
+    c1_nm           STRING,
     unit_nm         STRING,
     prd_se          STRING,
     prd_de          STRING,
     dt              STRING,
     ingested_at     STRING,
-    ingested_date   STRING
+    ingested_date   STRING,
+    kafka_topic     STRING,
+    kafka_partition INT,
+    kafka_offset    BIGINT
 )
+PARTITIONED BY (ingested_date)
 LOCATION 's3://propberg-lakehouse-hhy/bronze/raw_population/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3',
+    'optimize_rewrite_data_file_threshold'='5'
 );

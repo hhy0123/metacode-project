@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+        kafka-python==2.0.2 \
+        requests==2.31.0 \
+        boto3==1.34.0 \
+        python-dotenv==1.0.0
+
+COPY jobs/producer/ /app/producer/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# 기본 실행: PRODUCER 환경변수로 어떤 모듈을 돌릴지 결정
+CMD ["sh", "-c", "python /app/producer/${PRODUCER}_producer.py"]

@@ -2,11 +2,15 @@ import requests
 import json
 import time
 import os
+import sys
 import boto3
 from kafka import KafkaProducer
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _runtime import run_daemon
 
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -15,15 +19,7 @@ API_KEY = os.getenv("MOLIT_API_KEY")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 S3_BUCKET = os.getenv("S3_BUCKET")
 TOPIC = "molit-transactions"
-
-print(f"[debug] API_KEY: {API_KEY[:10]}..." if API_KEY else "[debug] API_KEY 없음")
-
-s3 = boto3.client("s3", region_name="ap-northeast-2")
-
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_BOOTSTRAP,
-    value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
-)
+POLL_INTERVAL = int(os.getenv("MOLIT_POLL_INTERVAL", "300"))  # 기본 5분
 
 SIGUNGU_CODES = [
     "11110", "11140", "11170", "11200", "11215",
@@ -54,11 +50,12 @@ SIGUNGU_CODES = [
     "36110",
 ]
 
-YEAR_MONTHS = [
-    f"{year}{month:02d}"
-    for year in range(2024, 2026)
-    for month in range(1, 13)
-]
+s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
+
+producer = KafkaProducer(
+    bootstrap_servers=KAFKA_BOOTSTRAP,
+    value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+)
 
 def fetch_transactions(sigungu_code: str, year_month: str):
     url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
@@ -73,7 +70,7 @@ def fetch_transactions(sigungu_code: str, year_month: str):
     res.raise_for_status()
     return res.text
 
-def parse_records(xml_text: str, sigungu_code: str, year_month: str):
+def parse_and_send(xml_text: str, sigungu_code: str, year_month: str):
     import xml.etree.ElementTree as ET
     root = ET.fromstring(xml_text)
     items = root.findall(".//item")
@@ -86,36 +83,32 @@ def parse_records(xml_text: str, sigungu_code: str, year_month: str):
         }
         for child in item:
             record[child.tag.strip()] = child.text.strip() if child.text else None
+        producer.send(TOPIC, value=record)
         records.append(record)
-    return records
+    producer.flush()
 
-def save_to_s3(records: list, sigungu_code: str, year_month: str):
-    if not records:
-        return
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    key = f"raw/molit/{today}/{year_month}_{sigungu_code}.json"
-    body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
-    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))
+    if records:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        key = f"raw/molit/{today}/{year_month}_{sigungu_code}.json"
+        body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))
 
-def run():
+    return len(records)
+
+def run_once():
+    year_month = datetime.now().strftime("%Y%m")
+    print(f"[molit_producer] {year_month} 폴링 시작 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')} KST)")
     total = 0
-    for year_month in YEAR_MONTHS:
-        print(f"[molit_producer] {year_month} 수집 중...")
-        for code in SIGUNGU_CODES:
-            try:
-                xml = fetch_transactions(code, year_month)
-                records = parse_records(xml, code, year_month)
-                for r in records:
-                    producer.send(TOPIC, value=r)
-                producer.flush()
-                save_to_s3(records, code, year_month)
-                total += len(records)
-                if records:
-                    print(f"  [{year_month}][{code}] {len(records)}건 전송+S3저장")
-                time.sleep(0.3)
-            except Exception as e:
-                print(f"  [{year_month}][{code}] 오류: {e}")
-    print(f"[molit_producer] 전체 완료 — 총 {total}건")
+    for code in SIGUNGU_CODES:
+        try:
+            xml = fetch_transactions(code, year_month)
+            count = parse_and_send(xml, code, year_month)
+            total += count
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  [{code}] 오류: {e}")
+    print(f"[molit_producer] 폴링 완료 — {total}건 → Kafka Topic: {TOPIC}")
+    return total
 
 if __name__ == "__main__":
-    run()
+    run_daemon("molit_producer", POLL_INTERVAL, run_once)

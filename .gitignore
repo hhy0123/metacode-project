@@ -1,4 +1,10 @@
-
 .env
-
-.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+*.swp
+streaming-error.log

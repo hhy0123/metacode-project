@@ -1,4 +1,5 @@
--- Silver: 실거래가 enriched 테이블
+-- Silver: 실거래가 enriched 테이블 (Iceberg, MERGE INTO 대상)
+-- 시도 기준 파티셔닝으로 MERGE INTO 시 전체 스캔 회피
 CREATE TABLE IF NOT EXISTS propberg_silver.transactions_enriched (
     deal_id             STRING,
     sigungu_code        STRING,
@@ -21,11 +22,15 @@ CREATE TABLE IF NOT EXISTS propberg_silver.transactions_enriched (
     updated_at          STRING,
     ingested_date       STRING
 )
+PARTITIONED BY (sido, deal_year)
 LOCATION 's3://propberg-lakehouse-hhy/silver/transactions_enriched/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3',
+    'optimize_rewrite_data_file_threshold'='5'
 );
 
 -- Silver: 가격지수 enriched 테이블
@@ -38,11 +43,14 @@ CREATE TABLE IF NOT EXISTS propberg_silver.price_index_enriched (
     updated_at          STRING,
     ingested_date       STRING
 )
+PARTITIONED BY (year_month)
 LOCATION 's3://propberg-lakehouse-hhy/silver/price_index_enriched/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3'
 );
 
 -- Silver: 인구 enriched 테이블
@@ -58,5 +66,7 @@ LOCATION 's3://propberg-lakehouse-hhy/silver/population_enriched/'
 TBLPROPERTIES (
     'table_type'='ICEBERG',
     'format'='parquet',
-    'write_compression'='snappy'
+    'write_compression'='snappy',
+    'vacuum_max_snapshot_age_seconds'='604800',
+    'vacuum_min_snapshots_to_keep'='3'
 );
