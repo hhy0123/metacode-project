@@ -65,10 +65,12 @@ def parse_and_send(data: list, stat_name: str):
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             **row,
         }
+        # dedupe key는 streaming consumer SCHEMA / Bronze DDL에 실제로 적재되는 컬럼 기준으로.
+        # C1_NM(시도명)이 Bronze의 c1_nm 컬럼과 매핑되어 있어 일관성을 유지한다.
         key = "|".join([
             stat_name,
             str(record.get("PRD_DE", "")),
-            str(record.get("C1", "")),
+            str(record.get("C1_NM", "")),
             str(record.get("DT", "")),
         ])
         if _seen.seen(key):

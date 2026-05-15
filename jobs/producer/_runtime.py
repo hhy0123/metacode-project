@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -98,8 +99,20 @@ class SeenSet:
             self._set = set()
 
     def _save(self) -> None:
+        """원자적 저장 — 쓰는 도중 컨테이너가 죽어도 기존 파일이 깨지지 않는다.
+        임시 파일에 먼저 쓰고 os.replace로 한 번에 교체 (POSIX atomic rename)."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(self._keys), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=self._path.parent,
+            prefix=self._path.name + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            json.dump(self._keys, tmp)
+            tmp_path = tmp.name
+        os.replace(tmp_path, self._path)
 
     def seen(self, key: str) -> bool:
         return key in self._set

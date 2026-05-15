@@ -1,21 +1,37 @@
 """propberg Bronze 스트리밍 인제스천 (Kafka → Iceberg).
 
-- 토픽별로 독립적인 Spark Structured Streaming 쿼리를 시작합니다.
+- 토픽별로 독립적인 Spark Structured Streaming 쿼리를 시작.
 - foreachBatch 로 Iceberg `propberg_bronze.*` 테이블에 직접 append.
 - 토픽별 별도 checkpoint 경로 → exactly-once 보장 (Kafka offset + Iceberg snapshot).
-- trigger 1분: tickberg와 동일한 마이크로배치 주기.
+- trigger 1분: 마이크로배치 주기.
 - Kafka partition/offset 컬럼을 보존해 리플레이/감사 가능.
+
+한계: `spark.streams.awaitAnyTermination()`은 query 1개라도 fail하면 컨테이너 종료시킨다.
+운영 환경에선 query 단위 try/restart 로직이 필요하다 (Phase 2 개선 대상).
 """
 from __future__ import annotations
 
+import logging
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, StringType, StructField, StructType
+from pyspark.sql.types import StringType, StructField, StructType
+
+# 파티션 컬럼 ingested_date는 KST 기준이어야 한다. UTC로 두면 KST 00~09시 데이터가
+# 전날 파티션으로 들어가 파티션 프루닝/조회 일관성이 깨진다.
+KST = timezone(timedelta(hours=9))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [bronze-stream] %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
+log = logging.getLogger("bronze-stream")
 
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -203,10 +219,10 @@ def make_batch_writer(topic: str, table: str):
 
     def write_batch(batch_df: DataFrame, batch_id: int) -> None:
         if batch_df.rdd.isEmpty():
-            print(f"[bronze-stream] topic={topic} batch={batch_id} empty")
+            log.info("topic=%s batch=%s empty", topic, batch_id)
             return
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(KST).strftime("%Y-%m-%d")  # 파티션 키는 KST
         renamed = batch_df
         for src, dst in mapping.items():
             if src in renamed.columns:
@@ -241,7 +257,7 @@ def make_batch_writer(topic: str, table: str):
         renamed.writeTo(table).append()
 
         count = renamed.count()
-        print(f"[bronze-stream] topic={topic} batch={batch_id} rows={count} → {table}")
+        log.info("topic=%s batch=%s rows=%s → %s", topic, batch_id, count, table)
 
     return write_batch
 
@@ -275,18 +291,19 @@ def start_topic_stream(spark: SparkSession, topic: str, config: dict):
         .queryName(f"bronze_{topic}")
         .start()
     )
-    print(f"[bronze-stream] started topic={topic} → {config['table']} (trigger={TRIGGER_INTERVAL})")
+    log.info("started topic=%s → %s (trigger=%s)", topic, config["table"], TRIGGER_INTERVAL)
     return query
 
 
 def main() -> None:
     spark = build_spark()
-    print(
-        f"[bronze-stream] Kafka={KAFKA_BOOTSTRAP} S3={S3_BUCKET} "
-        f"trigger={TRIGGER_INTERVAL} topics={list(TOPIC_CONFIG.keys())}"
+    log.info(
+        "Kafka=%s S3=%s trigger=%s topics=%s",
+        KAFKA_BOOTSTRAP, S3_BUCKET, TRIGGER_INTERVAL, list(TOPIC_CONFIG.keys()),
     )
     for topic, cfg in TOPIC_CONFIG.items():
         start_topic_stream(spark, topic, cfg)
+    # 한계: 한 query라도 fail하면 main 종료 → 컨테이너 재시작 (Docker restart 정책)
     spark.streams.awaitAnyTermination()
 
 

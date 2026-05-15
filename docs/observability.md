@@ -4,6 +4,22 @@
 
 ---
 
+## 4-Tier 모니터링 구조
+
+가시성을 한 도구에 몰면 잡음/신호 비율이 깨진다. 역할·주기·청중을 분리한 4-tier 구조를 채택했다.
+
+| Tier | 청중 | 주기 | 도구 | 무엇을 본다 |
+|---|---|---|---|---|
+| **T1 실시간 인프라** | SRE / 개발자 | 1분 | **Grafana** (localhost:3000) | Kafka 인입 rate, Consumer lag, 컴포넌트 UP/DOWN |
+| **T2 파이프라인** | 데이터 엔지니어 | 5–30분 | **Airflow UI** (localhost:8082) | DAG 성공/실패, retry, SLA miss, `bronze_freshness_check` 결과 |
+| **T3 비즈니스** | PM / 운영 | 시간/일 | **Superset** (localhost:8088) | Gold 대시보드 — 시도별 거래량, 가격 트렌드, anomaly 비율 |
+| **T4 ad-hoc 디버깅** | 데이터 엔지니어 | on-demand | **Athena 콘솔** | `streaming_health` 테이블 직접 쿼리, 데이터 품질 검증 |
+
+각 tier는 **하나 위 tier의 알람을 받아 한 단계 깊이 들어가는 도구**다:
+- T1에서 lag 폭증 알람 → T2로 가서 어느 DAG가 지연시키는지 확인 → T4로 가서 Athena 쿼리로 어느 시도/시간대인지 specific하게 확인.
+
+---
+
 ## SLI / SLO
 
 | 레이어 | SLI | SLO | 측정 방법 |

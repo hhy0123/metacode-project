@@ -26,27 +26,48 @@ dag = DAG(
     schedule_interval="0 6 * * *",
     start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,
+    max_active_runs=1,  # Iceberg 동시 commit 충돌 방지 + 매일 1회 보장
     tags=["propberg", "pipeline"],
     description="Bronze(streaming)에서 누적된 데이터를 매일 06:00 KST에 Silver → Gold로 변환",
 )
 
 
 def _bronze_freshness_check() -> bool:
-    """Bronze 최신 스냅샷이 6시간 이내인지 확인 — 스트리밍이 살아있는지 검증.
+    """Bronze 데이터가 최근에 적재됐는지 확인 — 스트리밍 파이프라인이 살아있는지 검증.
 
-    S3 LastModified는 UTC timezone-aware, threshold도 timezone-aware로 비교한다.
+    토픽별로 polling 주기가 달라 임계를 차등 적용한다:
+    - molit (5분 폴링) → 30분 안에 새 파일 있어야 함
+    - rone (1시간 폴링)  → 3시간 안에 있어야 함
+    - kosis (6시간 폴링) → 12시간 안에 있어야 함
+
+    S3 list_objects_v2는 알파벳 순이라 단순 MaxKeys=1로는 "최근" 보장 X.
+    paginator로 prefix 전체 순회 후 max(LastModified)로 진짜 최근 시각을 찾는다.
     """
     import boto3
     s3 = boto3.client("s3", region_name=AWS_REGION)
-    threshold = datetime.now(timezone.utc) - timedelta(hours=6)
-    for prefix in ("bronze/raw_transactions/", "bronze/raw_price_index/", "bronze/raw_population/"):
-        resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix, MaxKeys=1)
-        contents = resp.get("Contents", [])
-        if not contents:
+    now = datetime.now(timezone.utc)
+
+    thresholds = {
+        "bronze/raw_transactions/": timedelta(minutes=30),
+        "bronze/raw_price_index/":  timedelta(hours=3),
+        "bronze/raw_population/":   timedelta(hours=12),
+    }
+
+    paginator = s3.get_paginator("list_objects_v2")
+    for prefix, lag_limit in thresholds.items():
+        latest = None
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                if latest is None or obj["LastModified"] > latest:
+                    latest = obj["LastModified"]
+        if latest is None:
+            print(f"[bronze_freshness] FAIL {prefix}: 객체 없음")
             return False
-        latest = max(o["LastModified"] for o in contents)
-        if latest < threshold:
+        lag = now - latest
+        if lag > lag_limit:
+            print(f"[bronze_freshness] FAIL {prefix}: lag={lag} > 임계={lag_limit}")
             return False
+        print(f"[bronze_freshness] OK {prefix}: lag={lag}")
     return True
 
 

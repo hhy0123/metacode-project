@@ -27,6 +27,41 @@
        Airflow propberg_mgmt (매일 03:00 KST) — rewrite_manifests → compaction → expire → orphan
 ```
 
+### Airflow ↔ Glue Job 연동 흐름
+
+Airflow 자체는 Spark/Iceberg를 직접 실행하지 않는다. **AWS Glue Console에 미리 등록된 Job**을 `aws glue start-job-run`으로 트리거할 뿐이다. Glue Job 측이 실제 Spark + Iceberg 처리를 수행하고, 결과만 Airflow가 성공/실패로 받는다.
+
+```
+Airflow DAG (로컬 Docker)                                AWS Glue (us-east-1)
+─────────────────────────                                ─────────────────────
+propberg_pipeline                                        ┌─ propberg-silver-job
+  └─ bronze_freshness_check  ─ S3 head ──┐               │     · 스크립트: jobs/silver/silver_job.py
+  └─ silver_trigger ─ aws glue start ──▶─┼─────────────▶ │     · MERGE INTO Silver
+  └─ gold_trigger   ─ aws glue start ──▶─┘               │
+                                                         ├─ propberg-gold-job
+propberg_mgmt                                            │     · 스크립트: jobs/gold/gold_job.py
+  └─ rewrite_manifests ─ aws glue start ─┐               │     · CTAS/MERGE Gold
+  └─ compaction        ─ aws glue start ─┤               │
+  └─ expire_snapshots  ─ aws glue start ─┼─────────────▶ └─ propberg-mgmt-job
+  └─ remove_orphans    ─ aws glue start ─┘                     · 스크립트: jobs/mgmt_job.py
+                                                               · --operation 파라미터로 4단계 분기
+```
+
+### Glue Job 사전 등록 요건
+
+AWS Glue Console에서 다음 3개 Job을 등록해 두어야 Airflow DAG가 트리거할 수 있다.
+
+| Glue Job 이름 | 스크립트 (이 레포 경로) | Trigger 시점 | Job parameter |
+|---|---|---|---|
+| `propberg-silver-job` | `jobs/silver/silver_job.py` | 매일 06:00 KST (`propberg_pipeline`) | `--s3_bucket=propberg-lakehouse-hhy` |
+| `propberg-gold-job` | `jobs/gold/gold_job.py` | Silver 완료 후 (`propberg_pipeline`) | `--s3_bucket=propberg-lakehouse-hhy` |
+| `propberg-mgmt-job` | `jobs/mgmt_job.py` | 매일 03:00 KST (`propberg_mgmt`, 4번 호출, 매번 `--operation` 다름) | `--s3_bucket=propberg-lakehouse-hhy --operation=<compaction\|expire_snapshots\|remove_orphans\|rewrite_manifests>` |
+
+Glue Job 등록 시:
+- Type: **Spark 4.0 / G.1X / Worker 2**
+- Job parameters에 `--datalake-formats=iceberg` 추가 (Iceberg 활성화)
+- 스크립트가 변경되면 (`silver_job.py` 등) Glue Console에서 다시 붙여넣어야 반영됨
+
 ---
 
 ## 인제스천 모드
@@ -122,17 +157,115 @@ Kafka, Airflow, Superset, Grafana, Spark Streaming은 로컬 Docker. S3/Glue/Ath
 
 ---
 
-## 100× 스케일 대응
+## Iceberg 정당화 — 3가지 가치 ↔ propberg 시연 위치
 
-현재 일 30,000건 수준. 100배(일 3M)로 확장 시:
+"왜 Parquet + Glue로는 안 되고 Iceberg가 필요한가" 에 대한 도메인 기반 답.
 
-| 병목 | 원인 | 대응 |
+| Iceberg 가치 | 시연 위치 | 부동산 도메인 시나리오 |
 |---|---|---|
-| Bronze 소파일 폭발 | 1분 trigger × 3 topic × 1,440분 = 일 4,320 마이크로배치 | Compaction 자동화 · target 128MB · `min-file-size` 64MB |
-| Silver MERGE INTO 느림 | 전체 파티션 스캔 | `sido`/`deal_year` 파티셔닝 + Z-order |
-| Gold Athena 스캔 비용 | 전체 테이블 스캔 | Gold 자체가 사전 집계라 OK, 파티션 프루닝만 강제 |
-| Kafka 처리 지연 | 단일 파티션 처리 한계 | 파티션 6→24, Consumer Group 분리 |
-| Spark Streaming 메모리 | maxOffsetsPerTrigger 초과 | `maxOffsetsPerTrigger=200,000` 상향, executor 메모리 2g→4g |
+| ① **MERGE INTO** (atomic upsert) | `propberg_silver.transactions_enriched` | 국토부가 신고 후 거래금액 정정 시 Bronze 중복 → Silver MERGE가 `deal_id` 기준 자동 dedupe. Parquet+Glue로는 전체 파티션 재작성 필요. |
+| ② **Row-level DELETE** | `propberg_silver.transactions_enriched` | 매수자 변심으로 **계약 해제** 시 해당 deal_id row 삭제. Parquet+Glue는 row-level delete 불가, 파티션 전체 rewrite 필요. |
+| ③ **Time Travel** (audit) | `propberg_silver.*` + Bronze | 정책 변경 (예: 취득세 인상) **전후 시점 데이터 비교** — `TIMESTAMP AS OF '2026-04-01 00:00'`로 한 줄 조회. 정책 영향 분석. |
+
+**"Parquet + Glue로는 안 되는가"**:
+1. atomic upsert 불가 (MERGE 없음)
+2. HIVE overwrite는 mid-write race → partial read 가능성
+3. snapshot 기반 time-travel 불가
+
+---
+
+## Decision Log — 핵심 결정과 트레이드오프
+
+| # | 결정 항목 | 후보 | 선택 | 근거 |
+|---|---|---|---|---|
+| D1 | Bronze 포맷 | Parquet / **Iceberg** | **Iceberg** | 소급 수정 반영(MERGE) + Time Travel + 매니지먼트 도구 일관성. 단점인 snapshot 오버헤드는 mgmt DAG로 흡수 |
+| D2 | Bronze→Silver 처리 모드 | streaming / **batch (일 1회)** | **batch** | MERGE INTO 비용. 매분 MERGE = Glue DPU 폭증. 부동산 신고는 30일 내 가능 = "분 단위 신선도" 불필요 |
+| D3 | Streaming trigger | 10초 / **1분** / 5분 | **1분** | 소파일 vs 신선도 균형. 1분 trigger = 일 4,320 micro-batch, compaction 1회로 흡수 가능 |
+| D4 | Producer streaming 흉내 | polling-only / **polling + dedupe** | **polling + dedupe** | 외부 API webhook 없음. 매 폴링 같은 row publish하면 Bronze 중복 → SeenSet 영속화로 새 row만 publish |
+| D5 | Kafka 토픽 설계 | 단일 / **소스별 분리** / 종목별 | **소스별 분리** (`molit`/`rone`/`kosis`) | 수집 주기 다름(5분/1시간/6시간). 독립 backpressure + 100x 시 파티션 분리 확장 |
+| D6 | Silver 파티셔닝 | 없음 / `sido` / **`sido + deal_year`** | **`sido + deal_year`** | MERGE INTO 전체 스캔 회피. 부동산 거래 = 시도×연도 카디널리티 적절 (16시도 × 5년 = 80 partition) |
+| D7 | Gold 집계 단위 | hourly / **daily + monthly** | **daily + monthly** | 부동산은 분 단위 거래 발생 안 함. 일/월이 자연스러운 BI 그라뉼래리티 |
+| D8 | 이상 거래 threshold | ±10% / **±30%** / ±50% | **±30%** | 부동산 가격 변동성 분석상 ±30%가 의미있는 이상치 기준 (시장 평균 변동 5~10% 범위) |
+| D9 | mgmt 자동화 우선순위 | Silver 먼저 / **Bronze 먼저** | **Bronze 먼저** | 1분 trigger 스트리밍이 소파일을 가장 빨리 만드는 레이어 |
+| D10 | 매니지먼트 schedule | 시간당 / **일 1회 (03:00 KST)** / 주 1회 | **일 1회** | 일 4,320 micro-batch = 일 1회 compaction이 비용 최적. snapshot retention 7일 |
+| D11 | sigungu dimension | 한글명 / **5자리 코드** | **5자리 코드** | API 응답에 일관된 시군구 한글명 없음. 코드는 unique + 안정적, 한글명은 별도 매핑 테이블에서 lookup |
+| D12 | dedupe state | 메모리만 / **파일(volume) + 메모리** | **파일 + 메모리** | 컨테이너 재시작 시 중복 publish 방지. LRU 200K 한도로 메모리 폭증 방지 |
+| D13 | 타임존 처리 | UTC / **KST** | **KST** | 한국 부동산 = 한국 시각 기준. Airflow schedule + `ingested_date` 파티션 + dealDay 모두 KST 통일. UTC 혼재 = 자정 부근 row 전날 파티션으로 들어가 prune 깨짐 |
+| D14 | 발표 한계 인정 | 강한 streaming 주장 / **솔직한 polling+dedupe** | **솔직 명시** | 외부 API가 webhook 미제공 → 진짜 streaming source 아님. docs에 한계 명시 + 어떻게 우회했는지 설계 |
+
+---
+
+## 부하 capacity 검증 — Phase 1 vs 100x
+
+| 컴포넌트 | 이론 한계 (단일 노드) | 현재 부하 | 활용률 | 100x 부하 | 한계 도달? |
+|---|---|---|---|---|---|
+| molit Producer | ~120 req/min (API limit) | 24 req/5min | **5%** | 2,400 req/min | **초과** → 멀티 API key 또는 가입 종목 분할 |
+| Kafka broker | ~50K msg/sec | ~20 msg/sec | **0.04%** | 2K msg/sec | 4% → 단일 broker 유지 가능 |
+| Kafka topic partition (key=sigungu) | ~10K msg/sec | 거의 0 | ~0% | 670 msg/sec | 7% → 파티션 6→12 |
+| Spark Streaming (local[2]) | ~50K rows/min sink | 5,800/5min = 1,160/min | **2.3%** | 116K/min | **초과** → EMR Serverless 또는 executor 4→8 |
+| Silver MERGE INTO (Glue G.1X) | ~50K rows/min | 일 30K = 1회 처리 | 여유 | 일 3M = 1회 처리 | **초과** → 종목별 partition 병렬 또는 micro-batch MERGE |
+| Gold CTAS | ~수십만 rows/min | 일 1회 | 여유 | 일 1회 | 여유 |
+| Athena scan | 5GB / query (workgroup limit) | <1GB | 여유 | 50GB | **초과** → workgroup limit 상향 + Gold 사전 집계 강제 |
+
+**핵심 결론**:
+- 현재 모든 컴포넌트가 한계 대비 **여유 (10% 이하)**
+- 100x에서 **가장 먼저 깨지는 곳 = Silver MERGE INTO + Spark Streaming**
+- Kafka는 100x에서도 여유 → broker 추가는 안전성(RF=3) 위해서만
+- API rate limit이 실질적 첫 병목 — propberg 도메인 특성
+
+---
+
+## 데이터 규모 추정
+
+| 레이어 | 일 row 수 (현재) | 일 row 수 (100x) | 압축 후 크기/일 | 연간 (250일) |
+|---|---|---|---|---|
+| Bronze raw_transactions | ~30K | ~3M | 5–10 MB | 1.5–2.5 GB |
+| Bronze raw_price_index | ~5K | ~500K | 1–2 MB | 250–500 MB |
+| Bronze raw_population | ~300 | ~30K | < 1 MB | ~50 MB |
+| Silver transactions_enriched | ~30K | ~3M | 8–15 MB (derived 컬럼 포함) | 2–4 GB |
+| Gold daily_trade_summary | ~3K (지역×일) | ~10K | < 1 MB | ~100 MB |
+| Gold monthly_price_trend | ~500 (지역×월) | ~5K | < 1 MB | ~10 MB |
+| Gold anomaly_transactions | 변동 (~1K) | ~100K | < 1 MB | ~50 MB |
+
+**핵심**: 스토리지 비용이 깨지는 게 아니라 **컴퓨트 (Glue DPU + Athena scan)** 가 먼저 깨진다.
+
+---
+
+## 100× 스케일 대응 — 4 dimension 분해
+
+현재 일 30,000건 수준. 100배(일 3M)로 확장 시 깨지는 지점을 4가지 dimension으로 분해.
+
+### Dimension 1: Throughput (인입 처리량)
+
+| 깨짐 | 100x 증상 | 해결 |
+|---|---|---|
+| 외부 API rate limit | 1분당 호출 한도 초과 | 멀티 API key + 시군구 분할 polling |
+| Kafka single broker | 손실 가능 (RF=1) | MSK 또는 broker 3대 + RF=3 |
+| Spark Streaming `local[2]` | executor 부족 | EMR Serverless 또는 EKS Spark Operator (auto-scaling) |
+
+### Dimension 2: Batch Window (배치 완료 시간)
+
+| 깨짐 | 100x 증상 | 해결 |
+|---|---|---|
+| Bronze→Silver MERGE 1회 | 일 1회 MERGE = 3M row, Glue Job timeout 가능 | 시도별 partition 병렬 / 또는 micro-batch MERGE (Spark Structured Streaming foreachBatch) |
+| Silver→Gold CTAS | 동일 | Gold cascade (daily → weekly → monthly 사전 집계 단계화) |
+| Compaction 일 1회 (03:00) | 3시간 초과 가능 | 시간당 compaction (Bronze만) + day partition 분할 + rewrite_manifests 빈도 ↑ |
+
+### Dimension 3: Storage / Compaction
+
+| 깨짐 | 100x 증상 | 해결 |
+|---|---|---|
+| Bronze 소파일 폭발 | 일 4,320 micro-batch × 3 topic | compaction target 128MB → 256MB, min-file-size 강화 |
+| Snapshot 누적 | 일 4,320 snapshot/topic | expire_snapshots 7일 → 3일 retention, 시간당 expire |
+| S3 비용 | 누적 GB 증가 | Lifecycle: Bronze 90일 → Glacier IR |
+
+### Dimension 4: Concurrency / Query (대시보드 부하)
+
+| 깨짐 | 100x 증상 | 해결 |
+|---|---|---|
+| Athena 5GB / query | 대시보드 쿼리 초과 | Gold 사전 집계 강제 + Partition Pruning 필수 + result reuse |
+| Superset 동시 사용자 | 일 N건 대시보드 refresh | Athena workgroup tier 분리 + Materialized View (StarRocks/Trino) |
+| Glue Catalog request | 메타 요청 폭증 | Athena query 캐싱 + Glue Catalog 유료 plan ($1/M req) |
 
 ## 1000× 스케일 대응
 
