@@ -46,18 +46,21 @@ def test_silver_job_implements_streaming_health() -> None:
 
 # --- invariant 3: kafka_consumer가 ingested_date를 KST로 ---
 def test_kafka_consumer_uses_kst_for_partition_date() -> None:
+    """ingested_date 파티션 컬럼이 KST 기준이어야 한다.
+    UTC로 두면 KST 자정 부근 row가 전날 파티션으로 들어가 파티션 프루닝 깨짐 — 강사 피드백."""
     src = (ROOT / "jobs" / "consumer" / "kafka_consumer.py").read_text(encoding="utf-8")
-    # KST timezone offset이 정의되어 있고 ingested_date 생성에 사용되어야 함
-    assert "timedelta(hours=9)" in src, "KST timezone offset 정의 필요"
-    # UTC strftime이 ingested_date 부근에 남아있으면 안 됨
-    lines = src.split("\n")
-    for i, line in enumerate(lines):
-        if "ingested_date" in line and "F.lit(today)" in line:
-            # today 변수가 KST 기반인지 직전 라인들 확인
-            window = "\n".join(lines[max(0, i - 5) : i])
-            assert "KST" in window or "Asia/Seoul" in window, (
-                "ingested_date 파티션은 KST 기반이어야 함"
-            )
+    # 1) KST timezone offset 정의
+    assert "timedelta(hours=9)" in src, "KST timezone offset (timedelta(hours=9)) 정의 필요"
+    # 2) today 변수를 KST 기반으로 생성
+    assert "datetime.now(KST)" in src, (
+        "today 변수를 datetime.now(KST).strftime(...) 으로 생성해야 함"
+    )
+    # 3) today가 ingested_date로 들어가는지
+    assert 'withColumn("ingested_date", F.lit(today))' in src, (
+        "ingested_date 컬럼 값은 KST 기반 today여야 함"
+    )
+    # 4) UTC strftime이 ingested_date 부근에 남아있으면 안 됨
+    assert "datetime.utcnow()" not in src, "datetime.utcnow() 잔재 — KST로 통일 필요"
 
 
 # --- invariant 4: 모든 DAG가 timezone-aware schedule ---
