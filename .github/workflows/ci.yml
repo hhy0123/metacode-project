@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -16,7 +16,7 @@ jobs:
           python-version: '3.11'
       - name: Install ruff
         run: pip install ruff==0.3.0
-      - name: Lint
+      - name: Lint (warning만 — 비차단)
         run: |
           ruff check jobs/ tests/ || true
           ruff format --check jobs/ tests/ || true
@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Parse DAGs
+      - name: AST parse DAG 파일
         run: |
           for dag in dags/*.py; do
             python -c "import ast; ast.parse(open('$dag').read())"
@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate DDL has Iceberg properties
+      - name: DDL Iceberg property 검증
         run: |
           for f in ddl/*.sql; do
             if ! grep -q "ICEBERG" "$f"; then
@@ -55,8 +55,37 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Parse all Python files
+      - name: AST parse 모든 Python 파일
         run: |
           for f in $(find jobs tests -name "*.py"); do
             python -c "import ast; ast.parse(open('$f').read())"
           done
+
+  pytest:
+    runs-on: ubuntu-latest
+    name: pytest (invariant 19개)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest
+        # pyspark 의존성 있는 test_bronze_schema는 제외 — CI 가볍게 유지.
+        # 나머지 invariant 19개 (DDL/DAG/data quality)는 정적 검증이라 pytest만으로 충분.
+        run: pip install pytest==8.0.0
+      - name: Run invariant tests
+        run: |
+          python -m pytest tests/ \
+            --ignore=tests/test_bronze_schema.py \
+            -v --tb=short
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    name: shellcheck (infra scripts, error severity만 차단)
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck infra/scripts
+        run: |
+          # ubuntu-latest에 shellcheck 기본 설치됨.
+          # -S error: syntax/semantic 에러만 차단 (style/info warning은 통과).
+          shellcheck -S error infra/scripts/*.sh
