@@ -150,31 +150,13 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       STREAMING_TRIGGER_INTERVAL: ${STREAMING_TRIGGER_INTERVAL:-60 seconds}
     ports:
-      - "4040:4040"   # Spark UI
+      - "4040:4040"   # Spark UI (Structured Streaming 탭에서 batch duration / input rate 확인)
     restart: unless-stopped
 
-  spark-master:
-    image: apache/spark:3.5.0
-    container_name: propberg-spark-master
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
-    environment:
-      - SPARK_NO_DAEMONIZE=true
-    ports:
-      - "8081:8080"
-      - "7077:7077"
-    volumes:
-      - ../../jobs:/opt/jobs
-
-  spark-worker:
-    image: apache/spark:3.5.0
-    container_name: propberg-spark-worker
-    depends_on:
-      - spark-master
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    environment:
-      - SPARK_NO_DAEMONIZE=true
-      - SPARK_WORKER_MEMORY=2g
-      - SPARK_WORKER_CORES=2
+  # 주의: streaming-consumer가 `--master local[2]`로 단일 컨테이너 안에서 driver+executor를
+  # 함께 띄우므로, standalone Spark master/worker 컨테이너는 의도적으로 두지 않는다.
+  # 클러스터 분리는 100x 진화 단계에서 EMR Serverless / EKS Spark Operator로 가는 게 정답
+  # (docs/architecture.md Dimension 1 참고).
 
   superset:
     image: apache/superset:2.1.3
