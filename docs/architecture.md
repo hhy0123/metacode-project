@@ -47,6 +47,34 @@ Bronze만 실시간이고 Silver/Gold는 배치인 이유:
 
 ---
 
+## "Streaming" 의미와 한계 — 정직한 설명
+
+이 프로젝트의 외부 데이터 소스(국토부 실거래가, R-ONE 가격지수, KOSIS)는 모두 **webhook/CDC 같은 push 채널을 제공하지 않음**. 따라서 진짜 의미의 streaming source는 존재하지 않는다. Producer가 할 수 있는 건 polling뿐.
+
+순진하게 매 폴링마다 fetch한 row를 그대로 publish하면 **같은 거래가 매번 반복 publish** 되어 Bronze에 중복 누적 — Silver MERGE INTO가 dedupe해도 Kafka/Bronze 단에서 의미 없는 트래픽이 흐른다. 사실상 "정기 backfill + push"가 되어 Streaming이 아니다.
+
+본 프로젝트는 이 한계를 다음 방법으로 보완해 **producer 측 dedupe로 새 row만 Kafka에 publish** 하도록 만들었다:
+
+| 토픽 | dedupe key |
+|---|---|
+| molit-transactions | `sigungu_code + aptSeq + dealYear + dealMonth + dealDay + dealAmount + floor` |
+| rone-price-index | `year_month + CLS_ID + DTA_VAL` |
+| kosis-population | `stat_name + PRD_DE + C1 + DT` |
+
+- 본 row 키는 `SeenSet`(메모리 set + JSON 파일 영속화, `/var/lib/propberg/state/` Docker volume)에 보관
+- 컨테이너 재시작 후에도 같은 row를 또 publish하지 않음
+- 메모리 폭증 방지: LRU 200,000개 한도
+
+이로써 polling 기반이지만 **Kafka에는 새로 발생한 거래만 흐르고**, Bronze에도 새 row만 적재된다 — streaming consumer + 1분 trigger의 의미가 살아난다.
+
+### 진짜 streaming이 되려면 (장래 작업)
+
+- Bid/Ask 단위로 push해주는 CDC 소스 도입 (e.g. 카프카 connect for 시세 API)
+- 또는 외부 API를 직접 운영하는 시·구청 시스템과 webhook 계약
+- 100× 스케일에서는 위 둘 중 하나가 사실상 필수
+
+---
+
 ## 레이어별 역할
 
 ### Bronze — 원본 보존 (실시간)

@@ -10,10 +10,11 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.sensors.python import PythonSensor
 
-kst = pendulum.timezone("Asia/Seoul")
 S3_BUCKET = "propberg-lakehouse-hhy"
 AWS_REGION = "us-east-1"
 
+# Airflow 2.x는 start_date가 timezone-aware일 때만 schedule_interval(cron)을 그 timezone으로 해석한다.
+# pendulum.datetime(..., tz=...)로 만들어야 매일 06:00 KST에 실행됨. 그렇지 않으면 cron이 UTC 기준이 되어 KST 15:00에 실행될 수 있다.
 dag = DAG(
     dag_id="propberg_pipeline",
     default_args={
@@ -23,7 +24,7 @@ dag = DAG(
         "email_on_failure": False,
     },
     schedule_interval="0 6 * * *",
-    start_date=datetime(2026, 1, 1, tzinfo=kst),
+    start_date=pendulum.datetime(2026, 1, 1, tz="Asia/Seoul"),
     catchup=False,
     tags=["propberg", "pipeline"],
     description="Bronze(streaming)에서 누적된 데이터를 매일 06:00 KST에 Silver → Gold로 변환",

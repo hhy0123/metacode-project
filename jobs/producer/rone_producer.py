@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _runtime import run_daemon
+from _runtime import run_daemon, SeenSet
+
+_seen = SeenSet("rone")
 
 env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -45,28 +47,34 @@ def fetch_price_index(year_month: str):
     return res.json()
 
 def parse_and_send(data: dict, year_month: str):
+    """R-ONE 가격지수는 (year_month, CLS_ID, DTA_VAL)이 변하지 않는 한 같은 row.
+    producer 측 dedupe로 새 통계값만 publish."""
     try:
         rows = data["SttsApiTblData"][1]["row"]
     except (KeyError, IndexError):
         return 0
-    records = []
+    new_records = []
     for row in rows:
         record = {
             "year_month": year_month,
             "ingested_at": datetime.utcnow().isoformat(),
             **row,
         }
+        key = "|".join([year_month, str(record.get("CLS_ID", "")), str(record.get("DTA_VAL", ""))])
+        if _seen.seen(key):
+            continue
+        _seen.add(key)
         producer.send(TOPIC, value=record)
-        records.append(record)
+        new_records.append(record)
     producer.flush()
 
-    if records:
+    if new_records:
         today = datetime.utcnow().strftime("%Y-%m-%d")
         key = f"raw/rone/{today}/{year_month}.json"
-        body = "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+        body = "\n".join(json.dumps(r, ensure_ascii=False) for r in new_records)
         s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))
 
-    return len(records)
+    return len(new_records)
 
 def run_once():
     year_month = datetime.now().strftime("%Y%m")
@@ -74,7 +82,8 @@ def run_once():
     try:
         data = fetch_price_index(year_month)
         count = parse_and_send(data, year_month)
-        print(f"[rone_producer] 폴링 완료 — {count}건 → Kafka Topic: {TOPIC}")
+        _seen.flush()
+        print(f"[rone_producer] 폴링 완료 — 새 row {count}건 → Kafka Topic: {TOPIC}")
         return count
     except Exception as e:
         print(f"[rone_producer] 오류: {e}")

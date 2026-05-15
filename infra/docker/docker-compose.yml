@@ -94,6 +94,9 @@ services:
       MOLIT_API_KEY: ${MOLIT_API_KEY}
       MOLIT_POLL_INTERVAL: ${MOLIT_POLL_INTERVAL:-300}
       PRODUCER: molit
+      PRODUCER_STATE_DIR: /var/lib/propberg/state
+    volumes:
+      - producer_state:/var/lib/propberg/state
     restart: unless-stopped
 
   rone-producer:
@@ -110,6 +113,9 @@ services:
       RONE_API_KEY: ${RONE_API_KEY}
       RONE_POLL_INTERVAL: ${RONE_POLL_INTERVAL:-3600}
       PRODUCER: rone
+      PRODUCER_STATE_DIR: /var/lib/propberg/state
+    volumes:
+      - producer_state:/var/lib/propberg/state
     restart: unless-stopped
 
   kosis-producer:
@@ -126,6 +132,9 @@ services:
       KOSIS_API_KEY: ${KOSIS_API_KEY}
       KOSIS_POLL_INTERVAL: ${KOSIS_POLL_INTERVAL:-21600}
       PRODUCER: kosis
+      PRODUCER_STATE_DIR: /var/lib/propberg/state
+    volumes:
+      - producer_state:/var/lib/propberg/state
     restart: unless-stopped
 
   streaming-consumer:
@@ -203,4 +212,5 @@ services:
 
 volumes:
   airflow_logs:
+  producer_state:
   postgres_data:
