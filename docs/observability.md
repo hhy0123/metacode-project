@@ -53,13 +53,19 @@ Grafana 대시보드는 `monitoring/grafana/dashboards/propberg_streaming.json`�
 
 ---
 
-## 핵심 패널
+## 핵심 패널 (Grafana `propberg-streaming` 대시보드)
 
-1. **Kafka topic record count** — 토픽별 초당 인입 레코드 수
-2. **Consumer group lag** — 1,000건 초과 시 노란색, 10,000건 초과 시 빨간색
-3. **Spark batch duration** — 1분 trigger 안에 완료되어야 함
-4. **Streaming input rate** — 초당 처리 레코드 수
-5. **Service health (up)** — 모든 컴포넌트 헬스체크
+`monitoring/grafana/dashboards/propberg_streaming.json` 에 정의된 5개 패널.
+
+| # | 패널 | 메트릭 | 의미 |
+|---|---|---|---|
+| 1 | Kafka topic 인입 rate | `rate(kafka_topic_partition_current_offset[1m])` by topic | 토픽별 새 메시지 인입 속도. 0이면 producer 멈춤 또는 dedupe 결과 새 row 없음 |
+| 2 | Consumer group lag | `kafka_consumergroup_lag` by consumergroup, topic | Spark Streaming consumer가 따라잡지 못한 메시지 수. 노란색 임계 1,000 / 빨간색 10,000 |
+| 3 | 토픽별 누적 메시지 수 | `kafka_topic_partition_current_offset` 합계 | 토픽이 시작부터 받은 총 메시지 수. 우상향 증가 = streaming 살아있음 |
+| 4 | 토픽 partition 수 | `kafka_topic_partitions` | 100x 스케일 시 증설 필요 여부 (현재 3 / 한계 12) |
+| 5 | Service health | `up` by job | 모든 scrape target의 UP/DOWN |
+
+> Spark Structured Streaming 자체의 batch duration / input rate는 **Prometheus가 아니라 Spark UI** (`localhost:4040 → Structured Streaming 탭`)에서 본다. Spark JMX는 driver/executor 일반 메트릭만 노출해서 streaming-specific 그래프를 못 잡는다.
 
 ---
 
@@ -67,13 +73,15 @@ Grafana 대시보드는 `monitoring/grafana/dashboards/propberg_streaming.json`�
 
 | 알람 | 조건 | 대응 |
 |---|---|---|
-| Consumer lag 폭증 | `lag > 10,000` (5분 연속) | Spark Streaming 재시작 또는 Kafka 파티션 증설 |
-| Batch duration 초과 | `batch_duration > 50s` (3분 연속) | 메모리/코어 증설, target-file-size 조정 |
-| Producer 실패 | `poll failed > 5회` (10분 내) | API 키 / 외부 API 상태 확인 |
-| Iceberg 소파일 폭주 | snapshot 파일 수 > 1,000 | 임시 compaction 수동 실행 |
+| Consumer lag 폭증 | `kafka_consumergroup_lag > 10000` 5분 연속 | Spark Streaming 재시작 또는 Kafka 파티션 증설 |
+| Topic 인입 정체 | `rate(kafka_topic_partition_current_offset[5m]) == 0` 15분 연속 | Producer 컨테이너 / 외부 API 상태 확인 |
+| Producer 실패 | producer 컨테이너 로그에 `poll failed` 5회/10분 | API 키 / 외부 API rate limit 확인 |
+| Service down | `up{job=~"kafka-exporter|spark-streaming"} == 0` 2분 연속 | 해당 컨테이너 헬스체크 + 재시작 |
+| Bronze 신선도 실패 | Airflow `bronze_freshness_check` sensor timeout | 토픽별 임계 (molit 30분/rone 3시간/kosis 12시간) 확인 + Producer 로그 |
 | Silver/Gold 배치 실패 | Airflow task fail | 재실행, 입력 데이터 검증 |
+| 매니지먼트 실패 | `propberg_mgmt` DAG fail | CloudWatch Output logs에서 `[mgmt] ... FAIL` 메시지 확인 |
 
-> 메타코드 부트캠프 환경에선 PagerDuty 등을 붙이지 않고 Grafana 알람 + Slack webhook으로 충분. 프로덕션 전환 시 OpsGenie/PagerDuty 추가.
+> 발표/MVP 환경에선 PagerDuty 등을 붙이지 않고 Grafana 알람 + Slack webhook으로 충분. 프로덕션 전환 시 OpsGenie/PagerDuty 추가.
 
 ---
 

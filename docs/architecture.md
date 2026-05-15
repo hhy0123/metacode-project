@@ -324,7 +324,18 @@ Kafka, Airflow, Superset, Grafana, Spark Streaming은 로컬 Docker. S3/Glue/Ath
 
 ## 운영 가시성
 
-별도 문서 [observability.md](observability.md) 참고. 핵심 SLO:
-- Bronze 처리 지연 p95 < 5분
-- Consumer lag p95 < 1,000
-- Silver/Gold 배치 매일 07:30 KST 이전 완료
+세부는 [observability.md](observability.md) 참고. 핵심 SLO 요약:
+
+| 레이어 | SLO |
+|---|---|
+| Bronze 신선도 | 토픽별 차등 — molit 30분 / rone 3시간 / kosis 12시간 (각 producer polling 주기 × 6) |
+| Kafka consumer lag | p95 < 1,000 |
+| Bronze 처리 시간 | p95 < 30초 (Spark UI Structured Streaming 탭에서 직접 관측) |
+| Silver/Gold 배치 완료 | 매일 07:30 KST 이전 |
+| 매니지먼트 | 매일 03:00 KST 1회 성공 |
+
+가시성 도구는 **4-Tier 구조**:
+- **T1** Grafana (실시간 인프라 — Kafka lag/throughput/health)
+- **T2** Airflow UI (파이프라인 — DAG 성공/실패, SLA, `bronze_freshness_check`)
+- **T3** Superset (비즈니스 — Gold 대시보드, 시도별 거래, anomaly)
+- **T4** Athena 콘솔 (디버깅 — `streaming_health` 테이블 직접 쿼리)

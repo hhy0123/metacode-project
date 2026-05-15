@@ -168,12 +168,15 @@ Bronze가 1순위인 이유: 1분 trigger 스트리밍이 소파일을 가장 �
 
 ## 운영 가시성
 
+**4-Tier 구조** — T1 Grafana(실시간 인프라) / T2 Airflow UI(파이프라인) / T3 Superset(비즈니스) / T4 Athena 콘솔(디버깅)
+
 | SLO | 목표 |
 |---|---|
-| Bronze 처리 지연 p95 | < 5분 |
-| Consumer lag p95 | < 1,000 |
-| Spark batch duration p95 | < 30초 |
+| Bronze 신선도 | molit < 30분 · rone < 3시간 · kosis < 12시간 (각 producer polling 주기 × 6) |
+| Kafka consumer lag p95 | < 1,000 |
+| Bronze micro-batch 처리 시간 p95 | < 30초 (Spark UI Structured Streaming 탭) |
 | Silver/Gold 배치 완료 | 매일 07:30 KST 이전 |
+| 매니지먼트 (Compaction/Expire/Orphan) | 매일 03:00 KST 1회 성공 |
 
 Grafana 대시보드 (`monitoring/grafana/dashboards/propberg_streaming.json`)가 컨테이너 기동 시 자동 import. 알람 정책과 런북은 [docs/observability.md](docs/observability.md) 참고.
 
@@ -250,10 +253,10 @@ propberg/
 
 | 평가 기준 | propberg에서 달성한 방법 |
 |---|---|
-| **운영 가시성** | kafka-exporter + Spark JMX + Grafana 대시보드 + SLO 문서 + 런북 + `streaming_health` 테이블 |
-| **스케일 사고력** | 100x/1000x 시나리오 + 레이어별 병목 분석 + 비용 추정표 |
-| **Iceberg 필요성** | 소급 수정 (MERGE), 계약 해제 (DELETE), Time Travel, 스트리밍 소파일 통합 관리 |
-| **협업·지속 가능성** | pyproject + ruff + pre-commit + pytest + GitHub Actions CI + 문서화 |
+| **운영 가시성** | 4-tier (Grafana / Airflow / Superset / Athena) + kafka-exporter 메트릭 + Spark UI Structured Streaming + SLO 표 + 런북 3개 + `streaming_health` 테이블 |
+| **스케일 사고력** | 100x를 4-dimension (Throughput / Batch / Storage / Concurrency)으로 분해 + 부하 capacity 검증표 + 1000x 시나리오 + 비용 추정 |
+| **Iceberg 필요성** | 3가지 가치 ↔ 시연 위치 매핑 (MERGE: 실거래가 정정, DELETE: 계약 해제, Time Travel: 정책 전후 비교) |
+| **협업·지속 가능성** | Decision Log 14개 + pyproject + ruff + pre-commit + pytest 24개 invariant + GitHub Actions CI |
 
 | 구현 필수 | 위치 |
 |---|---|
