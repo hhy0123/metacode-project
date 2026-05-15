@@ -9,25 +9,33 @@
   "panels": [
     {
       "type": "stat",
-      "title": "Kafka topic record count (1m rate)",
+      "title": "Kafka topic 인입 rate (1분 평균, msg/s)",
+      "description": "토픽별 새 메시지 인입 속도. 0이면 producer가 멈춤 또는 dedupe로 새 row가 없는 상태.",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (topic) (rate(kafka_topic_partition_current_offset[1m]))",
+          "expr": "sum by (topic) (rate(kafka_topic_partition_current_offset{topic!~\"__.*\"}[1m]))",
           "legendFormat": "{{topic}}",
           "refId": "A"
         }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2
+        }
+      },
       "gridPos": {"h": 6, "w": 12, "x": 0, "y": 0}
     },
     {
       "type": "timeseries",
       "title": "Consumer group lag (records)",
+      "description": "Spark Streaming consumer가 따라잡지 못한 메시지 수. 지속 증가 = backpressure 위험.",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "sum by (consumergroup, topic) (kafka_consumergroup_lag)",
-          "legendFormat": "{{consumergroup}}/{{topic}}",
+          "expr": "sum by (consumergroup, topic) (kafka_consumergroup_lag{topic!~\"__.*\"})",
+          "legendFormat": "{{consumergroup}} / {{topic}}",
           "refId": "A"
         }
       ],
@@ -47,25 +55,32 @@
     },
     {
       "type": "timeseries",
-      "title": "Spark streaming batch duration (ms)",
+      "title": "토픽별 누적 메시지 수 (current offset)",
+      "description": "Kafka 토픽이 시작부터 받은 총 메시지 수. 우상향 증가 = streaming 살아있음.",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "spark_streaming_lastCompletedBatch_processingDelay",
-          "legendFormat": "{{instance}}",
+          "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic!~\"__.*\"})",
+          "legendFormat": "{{topic}}",
           "refId": "A"
         }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
     },
     {
       "type": "timeseries",
-      "title": "Streaming input rate (records/sec)",
+      "title": "토픽 partition 수",
+      "description": "토픽별 partition 개수 — 100x 스케일 시 증설 필요 여부 확인.",
       "datasource": "Prometheus",
       "targets": [
         {
-          "expr": "spark_streaming_lastCompletedBatch_inputRowsPerSecond",
-          "legendFormat": "{{instance}}",
+          "expr": "kafka_topic_partitions{topic!~\"__.*\"}",
+          "legendFormat": "{{topic}}",
           "refId": "A"
         }
       ],
@@ -73,7 +88,8 @@
     },
     {
       "type": "stat",
-      "title": "Service health (up)",
+      "title": "Service health (Prometheus targets up)",
+      "description": "scrape target의 UP/DOWN. 0이면 해당 컴포넌트와 Prometheus 사이 연결 끊김.",
       "datasource": "Prometheus",
       "targets": [
         {
@@ -93,7 +109,7 @@
           },
           "mappings": [
             {"options": {"0": {"text": "DOWN", "color": "red"}}, "type": "value"},
-            {"options": {"1": {"text": "UP", "color": "green"}}, "type": "value"}
+            {"options": {"1": {"text": "UP",   "color": "green"}}, "type": "value"}
           ]
         }
       },
@@ -106,9 +122,11 @@
   "tags": ["propberg", "streaming"],
   "templating": {"list": []},
   "time": {"from": "now-1h", "to": "now"},
-  "timepicker": {},
-  "timezone": "browser",
+  "timepicker": {
+    "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h", "6h"]
+  },
+  "timezone": "Asia/Seoul",
   "title": "propberg — Bronze 스트리밍 운영 가시성",
   "uid": "propberg-streaming",
-  "version": 1
+  "version": 2
 }
