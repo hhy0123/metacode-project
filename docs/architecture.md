@@ -62,6 +62,18 @@ Glue Job 등록 시:
 - Job parameters에 `--datalake-formats=iceberg` 추가 (Iceberg 활성화)
 - 스크립트가 변경되면 (`silver_job.py` 등) Glue Console에서 다시 붙여넣어야 반영됨
 
+### Glue Database 사전 생성
+
+DDL을 적용하기 전에 Glue Catalog에 3개 Database를 만들어야 한다 (AWS Glue Console → Databases → Add database):
+
+| Database | 용도 | S3 위치 prefix |
+|---|---|---|
+| `propberg_bronze` | 스트리밍 원본 적재 | `s3://propberg-lakehouse-hhy/bronze/` |
+| `propberg_silver` | MERGE INTO 정제 결과 | `s3://propberg-lakehouse-hhy/silver/` |
+| `propberg_gold` | 사전 집계 + 이상 거래 + streaming_health | `s3://propberg-lakehouse-hhy/gold/` |
+
+DDL 파일 (`ddl/bronze.sql`, `silver.sql`, `gold.sql`)을 Athena에서 실행하면 각 Database 안에 Iceberg 테이블이 생성된다.
+
 ---
 
 ## 인제스천 모드

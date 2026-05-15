@@ -246,8 +246,13 @@ def make_batch_writer(topic: str, table: str):
                 ),
             )
 
+        # raw_json: molit Bronze에만 정의된 감사용 컬럼. parsed 데이터를 다시
+        # JSON 문자열로 직렬화해 저장 — 스키마 변경 / 추후 파싱 보정 / 감사 추적용.
         if "raw_json" not in renamed.columns and topic == "molit-transactions":
-            renamed = renamed.withColumn("raw_json", F.lit(None).cast("string"))
+            renamed = renamed.withColumn(
+                "raw_json",
+                F.to_json(F.struct(*[c for c in renamed.columns if c not in ("kafka_partition", "kafka_offset")])),
+            )
 
         for col_name in columns:
             if col_name not in renamed.columns:
