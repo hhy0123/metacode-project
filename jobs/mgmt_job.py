@@ -9,7 +9,7 @@
 """
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from pyspark.sql import SparkSession
 
@@ -56,7 +56,7 @@ spark = (
     .getOrCreate()
 )
 
-older_than_ts = (datetime.utcnow() - timedelta(days=older_than_days)).strftime("%Y-%m-%d %H:%M:%S")
+older_than_ts = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).strftime("%Y-%m-%d %H:%M:%S")
 
 success = 0
 failure = 0

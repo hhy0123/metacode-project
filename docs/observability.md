@@ -8,30 +8,32 @@
 
 | 레이어 | SLI | SLO | 측정 방법 |
 |---|---|---|---|
-| Producer | API 폴링 성공률 | 99% (24h) | `propberg-*-producer` 컨테이너 로그의 `poll done` / `poll failed` 비율 |
-| Kafka | 데이터 신선도 (lag) | Consumer lag < 1,000 (p95) | `kafka_consumergroup_lag` |
-| Bronze 스트리밍 | 처리 지연 (end-to-end) | p95 < **5분** | `ingested_at - trade_ts` |
-| Bronze 스트리밍 | 배치 처리 시간 | p95 < **30초** | `spark_streaming_lastCompletedBatch_processingDelay` |
+| Producer | 새 row publish 건수 / 폴링 | 신규 데이터가 0건 연속 24h 미만 | `poll done new_rows=N` 로그 + Grafana Kafka topic record count |
+| Kafka | 데이터 신선도 (lag) | Consumer lag < 1,000 (p95) | `kafka_consumergroup_lag` (kafka-exporter) |
+| Bronze 스트리밍 | end-to-end 지연 | p95 < **5분** | `ingested_at - dealDay` 비교 — Athena 쿼리로 직접 측정 |
+| Bronze 스트리밍 | micro-batch 처리 시간 | p95 < **30초** | Spark UI **Structured Streaming 탭** (localhost:4040) → Batch Duration 그래프 |
 | Silver 배치 | 일일 완료 시각 | 매일 07:00 KST 이전 | Airflow `propberg_pipeline` 종료 시각 |
 | Gold 배치 | 일일 완료 시각 | 매일 07:30 KST 이전 | Airflow `propberg_pipeline` 종료 시각 |
 | 매니지먼트 | 매일 성공 | 1회/일 | Airflow `propberg_mgmt` 종료 상태 |
+
+> 참고: Spark Structured Streaming의 micro-batch 메트릭은 Spark JMX/Prometheus 노출이 **driver의 BlockManager/Executor 일반 메트릭만** 포함되어, batch duration / input rate 같은 streaming-specific 메트릭은 Prometheus에서 직접 안 잡힌다. 따라서 Spark UI의 Structured Streaming 탭(localhost:4040) 그래프를 1차 관측 수단으로 사용하고, Grafana는 Kafka 인입/lag/서비스 health 모니터링에 한정한다.
 
 ---
 
 ## 메트릭 스택
 
 ```
-Kafka  ─▶ kafka-exporter (9308)  ─┐
-                                  ├─▶ Prometheus (9090) ─▶ Grafana (3000)
-Spark Streaming ─▶ JMX(4040) ─────┘
+Kafka          ─▶ kafka-exporter (9308) ─┐
+Spark Driver   ─▶ /metrics/prometheus ───┼─▶ Prometheus (9090) ─▶ Grafana (3000)
+                                         │
+Spark UI       ─▶ localhost:4040/Structured Streaming (직접 관측)
 ```
 
 `infra/docker/prometheus.yml`의 scrape job:
-- `kafka-exporter` — broker/topic/consumer group 메트릭
-- `spark-streaming` — Spark Driver의 `/metrics/executors/prometheus`
-- `spark-master` — 클러스터 상태
+- `kafka-exporter` — broker/topic/consumer group 메트릭 (lag, throughput)
+- `spark-streaming` — Spark Driver의 일반 JVM/Executor 메트릭
 
-Grafana 대시보드는 `monitoring/grafana/dashboards/propberg_streaming.json`에 IaC로 정의되어 컨테이너 기동 시 자동 import 된다.
+Grafana 대시보드는 `monitoring/grafana/dashboards/propberg_streaming.json`에 IaC로 정의되어 컨테이너 기동 시 자동 import 된다. 단 Spark Structured Streaming의 batch duration / input rate 그래프는 **Spark UI에서 직접 확인**한다 (Prometheus 노출이 streaming query 단위로 안 됨).
 
 ---
 

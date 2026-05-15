@@ -4,7 +4,7 @@ Silver에는 `year_month` 컬럼이 없으므로 `deal_year` + `deal_month`로 �
 """
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -48,7 +48,7 @@ spark = (
     .getOrCreate()
 )
 
-today = datetime.utcnow().strftime("%Y-%m-%d")
+today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _with_year_month(df):

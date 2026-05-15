@@ -5,7 +5,7 @@ Bronze는 스트리밍 consumer가 영어 컬럼명으로 이미 정규화해서
 """
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -44,7 +44,7 @@ spark = (
     .getOrCreate()
 )
 
-today = datetime.utcnow().strftime("%Y-%m-%d")
+today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 # 시도 코드 매핑 (sigungu_code 앞 2자리)
 SIDO_MAP = {
@@ -99,7 +99,10 @@ def process_transactions() -> None:
             col("deal_id"),
             col("sigungu_code"),
             col("sido"),
-            trim(col("dong")).alias("sigungu"),
+            # 시군구는 sigungu_code(법정동 코드 5자리) 자체를 dimension으로 사용.
+            # 국토부 API XML에 시군구 한글명을 직접 주지 않아 일관성을 위해 코드 사용.
+            # 한글명이 필요하면 별도 sigungu_code → name 매핑 테이블로 lookup하면 된다.
+            col("sigungu_code").alias("sigungu"),
             trim(col("dong")).alias("dong"),
             trim(col("apt_name")).alias("apt_name"),
             col("deal_amount_clean").alias("deal_amount"),

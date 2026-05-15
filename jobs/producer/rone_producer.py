@@ -5,7 +5,7 @@ import os
 import sys
 import boto3
 from kafka import KafkaProducer
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -57,7 +57,7 @@ def parse_and_send(data: dict, year_month: str):
     for row in rows:
         record = {
             "year_month": year_month,
-            "ingested_at": datetime.utcnow().isoformat(),
+            "ingested_at": datetime.now(timezone.utc).isoformat(),
             **row,
         }
         key = "|".join([year_month, str(record.get("CLS_ID", "")), str(record.get("DTA_VAL", ""))])
@@ -69,7 +69,7 @@ def parse_and_send(data: dict, year_month: str):
     producer.flush()
 
     if new_records:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         key = f"raw/rone/{today}/{year_month}.json"
         body = "\n".join(json.dumps(r, ensure_ascii=False) for r in new_records)
         s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body.encode("utf-8"))

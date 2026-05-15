@@ -3,7 +3,7 @@
 Bronze 레이어는 `streaming-consumer` 컨테이너가 Kafka에서 직접 Iceberg로 실시간 적재.
 이 DAG는 Bronze에 쌓인 데이터를 매일 06:00 KST에 Silver/Gold로 변환.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pendulum
 from airflow import DAG
@@ -32,16 +32,19 @@ dag = DAG(
 
 
 def _bronze_freshness_check() -> bool:
-    """Bronze 최신 스냅샷이 6시간 이내인지 확인 — 스트리밍이 살아있는지 검증."""
+    """Bronze 최신 스냅샷이 6시간 이내인지 확인 — 스트리밍이 살아있는지 검증.
+
+    S3 LastModified는 UTC timezone-aware, threshold도 timezone-aware로 비교한다.
+    """
     import boto3
-    s3 = boto3.client("s3", region_name="us-east-1")
-    threshold = datetime.utcnow() - timedelta(hours=6)
+    s3 = boto3.client("s3", region_name=AWS_REGION)
+    threshold = datetime.now(timezone.utc) - timedelta(hours=6)
     for prefix in ("bronze/raw_transactions/", "bronze/raw_price_index/", "bronze/raw_population/"):
         resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix, MaxKeys=1)
         contents = resp.get("Contents", [])
         if not contents:
             return False
-        latest = max(o["LastModified"].replace(tzinfo=None) for o in contents)
+        latest = max(o["LastModified"] for o in contents)
         if latest < threshold:
             return False
     return True
